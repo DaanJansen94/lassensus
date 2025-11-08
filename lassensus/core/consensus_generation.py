@@ -237,9 +237,18 @@ def process_sample(sample_dir, sample_name, output_dir, min_depth=50, min_qualit
     l_ref = sample_dir / f"{sample_name}_L_reference.fasta"
     s_ref = sample_dir / f"{sample_name}_S_reference.fasta"
     
-    if not all(f.exists() for f in [l_ref, s_ref]):
-        logger.error(f"Missing required reference files for {sample_name}")
+    # Check which reference files exist
+    has_l_ref = l_ref.exists()
+    has_s_ref = s_ref.exists()
+    
+    if not has_l_ref and not has_s_ref:
+        logger.error(f"Missing required reference files for {sample_name} (neither L nor S segment references found)")
         return
+    
+    if not has_l_ref:
+        logger.warning(f"L-segment reference not found for {sample_name}, processing S-segment only")
+    if not has_s_ref:
+        logger.warning(f"S-segment reference not found for {sample_name}, processing L-segment only")
     
     # Check if rarefaction is needed
     total_reads = count_reads(fastq_file)
@@ -254,89 +263,107 @@ def process_sample(sample_dir, sample_name, output_dir, min_depth=50, min_qualit
     else:
         logger.info(f"Using all {total_reads:,} reads (below max_reads threshold)")
     
-    # Get input files - references are already found above
-    # Process L segment
-    l_bam = map_reads(fastq_file, l_ref, sample_dir, sample_name, 'L')
-    l_consensus, l_quality = generate_consensus(l_bam, l_ref, sample_dir, sample_name, 'L', 
-                                               min_depth, min_quality, majority_threshold)
-    
-    # Process S segment
-    s_bam = map_reads(fastq_file, s_ref, sample_dir, sample_name, 'S')
-    s_consensus, s_quality = generate_consensus(s_bam, s_ref, sample_dir, sample_name, 'S',
-                                               min_depth, min_quality, majority_threshold)
-    
-    # Create medaka output directory
-    medaka_dir = sample_dir / "medaka_output"
-    medaka_dir.mkdir(exist_ok=True)
-    
-    # Polish L segment with medaka
-    logger.info(f"Polishing L segment consensus for {sample_name} with medaka")
-    medaka_cmd = [
-        'medaka_consensus',
-        '-i', str(fastq_file),
-        '-d', str(l_consensus),
-        '-o', str(medaka_dir),
-        '-t', str(get_cpu_count())
-    ]
-    subprocess.run(medaka_cmd, check=True)
-    
-    # Move and rename polished L consensus
-    l_polished = medaka_dir / "consensus.fasta"
-    l_final = sample_dir / f"{sample_name}_L_consensus_polished.fasta"
-    shutil.move(l_polished, l_final)
-    
-    # Polish S segment with medaka
-    logger.info(f"Polishing S segment consensus for {sample_name} with medaka")
-    medaka_cmd = [
-        'medaka_consensus',
-        '-i', str(fastq_file),
-        '-d', str(s_consensus),
-        '-o', str(medaka_dir),
-        '-t', str(get_cpu_count())
-    ]
-    subprocess.run(medaka_cmd, check=True)
-    
-    # Move and rename polished S consensus
-    s_polished = medaka_dir / "consensus.fasta"
-    s_final = sample_dir / f"{sample_name}_S_consensus_polished.fasta"
-    shutil.move(s_polished, s_final)
-    
     # Reference lengths for RefSeq
     refseq_lengths = {
         'L': 7279,  # Reference length for L segment
         'S': 3402   # Reference length for S segment
     }
     
-    # Calculate completeness statistics using polished consensus
-    l_stats = calculate_completeness(l_final, l_ref, refseq_lengths['L'])
-    s_stats = calculate_completeness(s_final, s_ref, refseq_lengths['S'])
+    # Process L segment if reference exists
+    l_final = None
+    l_stats = None
+    if has_l_ref:
+        l_bam = map_reads(fastq_file, l_ref, sample_dir, sample_name, 'L')
+        l_consensus, l_quality = generate_consensus(l_bam, l_ref, sample_dir, sample_name, 'L', 
+                                                   min_depth, min_quality, majority_threshold)
+        
+        # Create medaka output directory for L segment
+        medaka_dir_l = sample_dir / "medaka_output_L"
+        medaka_dir_l.mkdir(exist_ok=True)
+        
+        # Polish L segment with medaka
+        logger.info(f"Polishing L segment consensus for {sample_name} with medaka")
+        medaka_cmd = [
+            'medaka_consensus',
+            '-i', str(fastq_file),
+            '-d', str(l_consensus),
+            '-o', str(medaka_dir_l),
+            '-t', str(get_cpu_count())
+        ]
+        subprocess.run(medaka_cmd, check=True)
+        
+        # Move and rename polished L consensus
+        l_polished = medaka_dir_l / "consensus.fasta"
+        l_final = sample_dir / f"{sample_name}_L_consensus_polished.fasta"
+        shutil.move(l_polished, l_final)
+        
+        # Calculate completeness statistics using polished consensus
+        l_stats = calculate_completeness(l_final, l_ref, refseq_lengths['L'])
+        
+        # Remove the medaka_output directory after moving the polished consensus
+        if os.path.exists(medaka_dir_l):
+            shutil.rmtree(medaka_dir_l)
+    
+    # Process S segment if reference exists
+    s_final = None
+    s_stats = None
+    if has_s_ref:
+        s_bam = map_reads(fastq_file, s_ref, sample_dir, sample_name, 'S')
+        s_consensus, s_quality = generate_consensus(s_bam, s_ref, sample_dir, sample_name, 'S',
+                                                   min_depth, min_quality, majority_threshold)
+        
+        # Create medaka output directory for S segment
+        medaka_dir_s = sample_dir / "medaka_output_S"
+        medaka_dir_s.mkdir(exist_ok=True)
+        
+        # Polish S segment with medaka
+        logger.info(f"Polishing S segment consensus for {sample_name} with medaka")
+        medaka_cmd = [
+            'medaka_consensus',
+            '-i', str(fastq_file),
+            '-d', str(s_consensus),
+            '-o', str(medaka_dir_s),
+            '-t', str(get_cpu_count())
+        ]
+        subprocess.run(medaka_cmd, check=True)
+        
+        # Move and rename polished S consensus
+        s_polished = medaka_dir_s / "consensus.fasta"
+        s_final = sample_dir / f"{sample_name}_S_consensus_polished.fasta"
+        shutil.move(s_polished, s_final)
+        
+        # Calculate completeness statistics using polished consensus
+        s_stats = calculate_completeness(s_final, s_ref, refseq_lengths['S'])
+        
+        # Remove the medaka_output directory after moving the polished consensus
+        if os.path.exists(medaka_dir_s):
+            shutil.rmtree(medaka_dir_s)
     
     # Log completeness statistics
     logger.info(f"\nCompleteness statistics for {sample_name}:")
-    logger.info("L segment:")
-    logger.info(f"  Total length: {l_stats['total_length']} bp")
-    logger.info(f"  N count: {l_stats['n_count']}")
-    logger.info(f"  Non-N length: {l_stats['non_n_length']} bp")
-    logger.info(f"  Selected reference length: {l_stats['ref_length']} bp")
-    logger.info(f"  Completeness vs selected reference: {l_stats['completeness_vs_ref']:.2f}%")
-    logger.info(f"  Completeness vs RefSeq: {l_stats['completeness_vs_refseq']:.2f}%")
+    if l_stats:
+        logger.info("L segment:")
+        logger.info(f"  Total length: {l_stats['total_length']} bp")
+        logger.info(f"  N count: {l_stats['n_count']}")
+        logger.info(f"  Non-N length: {l_stats['non_n_length']} bp")
+        logger.info(f"  Selected reference length: {l_stats['ref_length']} bp")
+        logger.info(f"  Completeness vs selected reference: {l_stats['completeness_vs_ref']:.2f}%")
+        logger.info(f"  Completeness vs RefSeq: {l_stats['completeness_vs_refseq']:.2f}%")
     
-    logger.info("\nS segment:")
-    logger.info(f"  Total length: {s_stats['total_length']} bp")
-    logger.info(f"  N count: {s_stats['n_count']}")
-    logger.info(f"  Non-N length: {s_stats['non_n_length']} bp")
-    logger.info(f"  Selected reference length: {s_stats['ref_length']} bp")
-    logger.info(f"  Completeness vs selected reference: {s_stats['completeness_vs_ref']:.2f}%")
-    logger.info(f"  Completeness vs RefSeq: {s_stats['completeness_vs_refseq']:.2f}%")
+    if s_stats:
+        logger.info("\nS segment:")
+        logger.info(f"  Total length: {s_stats['total_length']} bp")
+        logger.info(f"  N count: {s_stats['n_count']}")
+        logger.info(f"  Non-N length: {s_stats['non_n_length']} bp")
+        logger.info(f"  Selected reference length: {s_stats['ref_length']} bp")
+        logger.info(f"  Completeness vs selected reference: {s_stats['completeness_vs_ref']:.2f}%")
+        logger.info(f"  Completeness vs RefSeq: {s_stats['completeness_vs_refseq']:.2f}%")
     
     logger.info(f"\nGenerated and polished consensus sequences for {sample_name}")
-    logger.info(f"L-segment polished consensus: {l_final}")
-    logger.info(f"S-segment polished consensus: {s_final}")
-
-    # Remove the medaka_output directory after moving the polished consensus
-    if os.path.exists(medaka_dir):
-        shutil.rmtree(medaka_dir)
-        logger.info(f"Removed temporary medaka output directory: {medaka_dir}")
+    if l_final:
+        logger.info(f"L-segment polished consensus: {l_final}")
+    if s_final:
+        logger.info(f"S-segment polished consensus: {s_final}")
 
     # Create AllConsensus directory structure
     all_consensus_dir = os.path.join(output_dir, "AllConsensus")
@@ -346,23 +373,20 @@ def process_sample(sample_dir, sample_name, output_dir, min_depth=50, min_qualit
     for dir_path in [all_consensus_dir, l_segment_dir, s_segment_dir]:
         os.makedirs(dir_path, exist_ok=True)
     
-    # Copy polished consensus files to their respective directories
-    shutil.copy2(l_final, l_segment_dir)
-    shutil.copy2(s_final, s_segment_dir)
+    # Copy polished consensus files to their respective directories and append to multi-fasta
+    if l_final:
+        shutil.copy2(l_final, l_segment_dir)
+        l_multi_fasta = os.path.join(l_segment_dir, "all_L_consensus.fasta")
+        with open(l_multi_fasta, 'a') as outfile:
+            with open(l_final, 'r') as infile:
+                outfile.write(infile.read())
     
-    # Create or append to multi-fasta files
-    l_multi_fasta = os.path.join(l_segment_dir, "all_L_consensus.fasta")
-    s_multi_fasta = os.path.join(s_segment_dir, "all_S_consensus.fasta")
-    
-    # Append L segment consensus to multi-fasta
-    with open(l_multi_fasta, 'a') as outfile:
-        with open(l_final, 'r') as infile:
-            outfile.write(infile.read())
-    
-    # Append S segment consensus to multi-fasta
-    with open(s_multi_fasta, 'a') as outfile:
-        with open(s_final, 'r') as infile:
-            outfile.write(infile.read())
+    if s_final:
+        shutil.copy2(s_final, s_segment_dir)
+        s_multi_fasta = os.path.join(s_segment_dir, "all_S_consensus.fasta")
+        with open(s_multi_fasta, 'a') as outfile:
+            with open(s_final, 'r') as infile:
+                outfile.write(infile.read())
     
     logger.info(f"Appended consensus sequences to multi-fasta files in AllConsensus directory")
 
