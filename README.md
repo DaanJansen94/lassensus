@@ -179,7 +179,7 @@ Python dependencies (installed automatically with pip):
 If you use Lassensus in your research, please cite:
 
 ```
-Jansen, D., Laumen, J., Siebenmann, E., & Vercauteren, K. (2025). Lassenssus: A Command-Line Tool for Lassa virus consensus sequence generation from long-read sequencing data (Version v0.0.1). Zenodo. https://doi.org/10.5281/zenodo.15209207
+Jansen, D., Laumen, J., Siebenmann, E., & Vercauteren, K. (2025). Lassenssus: A Command-Line Tool for Lassa virus consensus sequence generation from long-read sequencing data (Version v0.0.5). Zenodo. https://doi.org/10.5281/zenodo.15209207
 ```
 
 ## License
