@@ -100,7 +100,8 @@ def download_references(output_dir, genome=1, completeness=90, host=4, metadata=
         host: Host filter (1=human, 2=rodent, 3=both, 4=no filter)
         metadata: Metadata filter (1=known location, 2=known date, 3=both, 4=no filter)
     """
-    output_dir = Path(output_dir)
+    # Convert to absolute path to handle relative paths correctly
+    output_dir = Path(output_dir).resolve()
     fasta_dir = output_dir / 'FASTA'
     
     # Check if references already exist
@@ -111,7 +112,7 @@ def download_references(output_dir, genome=1, completeness=90, host=4, metadata=
         l_files = list(l_segment_dir.glob('*.fasta')) + list(l_segment_dir.glob('*.fa'))
         s_files = list(s_segment_dir.glob('*.fasta')) + list(s_segment_dir.glob('*.fa'))
         if l_files and s_files:
-            logger.info(f"References already exist in {output_dir} ({len(l_files)} L-segment, {len(s_files)} S-segment files)")
+            logger.info(f"References already exist ({len(l_files)} L-segment, {len(s_files)} S-segment files)")
             logger.info("Skipping download. If you want to re-download, delete the references directory first.")
             return
     
@@ -129,22 +130,60 @@ def download_references(output_dir, genome=1, completeness=90, host=4, metadata=
     if genome == 2:
         cmd.extend(['--completeness', str(completeness)])
     
-    try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True)
-        logger.info("Successfully downloaded references")
-    except subprocess.CalledProcessError as e:
-        error_msg = e.stderr if e.stderr else e.stdout if e.stdout else str(e)
-        logger.error(f"Error downloading references: {error_msg}")
-        # Check if it's a network error and references might already exist
-        if "Network is unreachable" in error_msg or "urlopen error" in error_msg:
+    # Try downloading with retries for HTTP 400 errors (may be transient)
+    max_retries = 2
+    retry_delay = 10  # seconds
+    
+    for attempt in range(max_retries + 1):
+        try:
+            result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+            logger.info("Successfully downloaded references")
+            break
+        except subprocess.CalledProcessError as e:
+            error_msg = e.stderr if e.stderr else e.stdout if e.stdout else str(e)
+            
+            # Check if references were actually downloaded despite the error
+            # This can happen if the main download succeeded but special sequences download failed
             if l_segment_dir.exists() and s_segment_dir.exists():
                 l_files = list(l_segment_dir.glob('*.fasta')) + list(l_segment_dir.glob('*.fa'))
                 s_files = list(s_segment_dir.glob('*.fasta')) + list(s_segment_dir.glob('*.fa'))
+                # Exclude reference.fasta and outgroup.fasta as they're optional
+                l_files = [f for f in l_files if f.name not in ['reference.fasta', 'outgroup.fasta']]
+                s_files = [f for f in s_files if f.name not in ['reference.fasta', 'outgroup.fasta']]
+                
                 if l_files and s_files:
-                    logger.warning("Network error occurred, but existing references found. Continuing with existing references.")
+                    logger.warning(f"Lassaseq reported an error, but main references were downloaded successfully.")
+                    logger.info(f"Found {len(l_files)} L-segment and {len(s_files)} S-segment reference files.")
+                    logger.info("Continuing with existing references (special sequences like reference.fasta may be missing, but this is OK).")
                     return
-        logger.error("Cannot continue without references. Please check your network connection or provide existing references.")
-        sys.exit(1)
+            
+            # Check for HTTP 400 errors that might be transient
+            is_http_400 = "HTTP Error 400" in error_msg or "Bad Request" in error_msg
+            
+            if is_http_400 and attempt < max_retries:
+                logger.warning(f"HTTP 400 error on attempt {attempt + 1}/{max_retries + 1}. This may be due to rate limiting.")
+                logger.info(f"Waiting {retry_delay} seconds before retry...")
+                import time
+                time.sleep(retry_delay)
+                continue
+            
+            # If we get here, either it's not a retryable error or we've exhausted retries
+            logger.error(f"Lassaseq returned an error: {error_msg[:500]}")  # Truncate long error messages
+            
+            # Check for specific error types
+            if is_http_400:
+                logger.error("HTTP 400 Bad Request error from NCBI Entrez. This may be due to:")
+                logger.error("  - Rate limiting (too many requests)")
+                logger.error("  - Temporary NCBI service issues")
+                logger.error("  - Invalid request parameters")
+                logger.error("Please try again in a few minutes, or check your network connection.")
+            elif "Network is unreachable" in error_msg or "urlopen error" in error_msg:
+                logger.error("Network error occurred while downloading references.")
+            else:
+                logger.error("Unknown error occurred while downloading references.")
+            
+            logger.error("Cannot continue without references. Please check your network connection or provide existing references.")
+            sys.exit(1)
 
 def get_reference_info(ref_file):
     """Extract information from reference FASTA header."""
